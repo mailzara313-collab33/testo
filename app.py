@@ -1,17 +1,16 @@
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from flask import Flask, request, jsonify, render_template_string
+# app.py - Playwright + Render (Free Plan)
+
 import os
 import time
+import asyncio
+from playwright.async_api import async_playwright
+from flask import Flask, request, jsonify, render_template_string
 
 app = Flask(__name__)
 
 # Global değişkenler
-driver = None
+browser = None
+page = None
 durum = "BEKLIYOR"
 mesaj = "Hazır"
 logs = []
@@ -22,41 +21,34 @@ def log(m):
     logs.append(m)
     print(m, flush=True)
 
-def create_driver():
-    global driver
-    log("🌐 Chromium başlatılıyor...")
+async def create_browser():
+    """Playwright ile Chromium başlat"""
+    global browser, page
     
-    options = Options()
-    options.binary_location = "/usr/bin/chromium-browser"
-    
-    # Render.com için optimize
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-setuid-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--disable-web-security")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("--headless=new")
-    
-    # Render'da chromedriver yolu farklı olabilir
-    chromedriver_path = os.environ.get("CHROMEDRIVER_PATH", "/usr/bin/chromedriver")
+    log("🌐 Playwright başlatılıyor...")
     
     try:
-        service = Service(chromedriver_path)
-        driver = webdriver.Chrome(service=service, options=options)
+        playwright = await async_playwright().start()
+        
+        # Chromium'u indir ve başlat (kendi içinde)
+        browser = await playwright.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--window-size=1920,1080"
+            ]
+        )
+        
+        page = await browser.new_page()
         log("✅ Chromium başlatıldı!")
         return True
+        
     except Exception as e:
         log(f"❌ Hata: {str(e)[:200]}")
-        # Alternatif yol dene
-        try:
-            service = Service("/usr/lib/chromium-browser/chromedriver")
-            driver = webdriver.Chrome(service=service, options=options)
-            log("✅ Chromium başlatıldı (alternatif yol)!")
-            return True
-        except Exception as e2:
-            log(f"❌ Alternatif de başarısız: {str(e2)[:200]}")
-            return False
+        return False
 
 @app.route('/')
 def index():
@@ -162,7 +154,6 @@ def index():
         document.getElementById('formSection').style.display = 'none';
         document.getElementById('mobileSection').style.display = 'block';
         
-        // Giriş yap
         const res = await fetch('/giris', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -171,6 +162,7 @@ def index():
         
         const data = await res.json();
         updateStatus(data);
+        updateLogs(data.logs);
         
         if(data.durum === 'MOBIL_ONAY_BEKLIYOR') {
             startChecking();
@@ -190,7 +182,6 @@ def index():
                 updateLogs(data.logs);
                 
                 if(data.durum === 'GIRIS_BASARILI') {
-                    // Transfer yap
                     await transfer();
                 } else if(data.durum === 'HATA') {
                     alert('Hata: ' + data.mesaj);
@@ -218,6 +209,7 @@ def index():
         
         const data = await res.json();
         updateStatus(data);
+        updateLogs(data.logs);
         
         if(data.durum === 'BASARILI') {
             document.getElementById('mobileSection').innerHTML = 
@@ -247,7 +239,7 @@ def index():
 
 @app.route('/giris', methods=['POST'])
 def giris():
-    global durum, mesaj, driver
+    global durum, mesaj, browser, page
     
     data = request.get_json()
     tc = data.get('tc', '')
@@ -255,27 +247,27 @@ def giris():
     
     log(f"🚀 Giriş başlatılıyor... TC: {tc[:4]}****{tc[-2:]}")
     
-    if driver is None:
-        if not create_driver():
-            return jsonify({"durum": "HATA", "mesaj": "Chromium başlatılamadı"})
+    # Async fonksiyonu sync çağır
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    if browser is None:
+        success = loop.run_until_complete(create_browser())
+        if not success:
+            return jsonify({"durum": "HATA", "mesaj": "Chromium başlatılamadı", "logs": logs})
     
     try:
-        log("📍 Enpara açılıyor...")
-        driver.get("https://internetsubesi.enpara.com/Login/LoginPage.aspx")
-        time.sleep(3)
+        loop.run_until_complete(page.goto("https://internetsubesi.enpara.com/Login/LoginPage.aspx"))
+        loop.run_until_complete(page.wait_for_timeout(3000))
         
         log("📝 TC giriliyor...")
-        tc_input = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "txtuserid"))
-        )
-        tc_input.clear()
-        tc_input.send_keys(tc)
+        loop.run_until_complete(page.fill("#txtuserid", tc))
         
         log("🔑 Şifre giriliyor...")
-        driver.find_element(By.ID, "txtpass").send_keys(sifre)
+        loop.run_until_complete(page.fill("#txtpass", sifre))
         
         log("🚀 Giriş yapılıyor...")
-        driver.find_element(By.ID, "ctl00_MainContent_lbtnNext").click()
+        loop.run_until_complete(page.click("#ctl00_MainContent_lbtnNext"))
         
         durum = "MOBIL_ONAY_BEKLIYOR"
         mesaj = "Telefonundan onay ver"
@@ -293,11 +285,14 @@ def giris():
 def kontrol():
     global durum, mesaj
     
-    if driver is None:
+    if browser is None:
         return jsonify({"durum": "BEKLIYOR", "mesaj": "Başlatılmadı", "logs": logs})
     
     try:
-        current_url = driver.current_url
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        current_url = loop.run_until_complete(page.url())
         
         if "Account/AccountSummary" in current_url:
             if durum != "GIRIS_BASARILI":
@@ -306,11 +301,14 @@ def kontrol():
                 log("✅ GİRİŞ BAŞARILI!")
             return jsonify({"durum": "GIRIS_BASARILI", "mesaj": mesaj, "logs": logs})
         
-        errors = driver.find_elements(By.ID, "divErrorMsg")
-        if errors and errors[0].text.strip():
-            durum = "HATA"
-            mesaj = errors[0].text.strip()
-            return jsonify({"durum": "HATA", "mesaj": mesaj, "logs": logs})
+        # Hata kontrolü
+        error_elem = loop.run_until_complete(page.query_selector("#divErrorMsg"))
+        if error_elem:
+            error_text = loop.run_until_complete(error_elem.inner_text())
+            if error_text.strip():
+                durum = "HATA"
+                mesaj = error_text.strip()
+                return jsonify({"durum": "HATA", "mesaj": mesaj, "logs": logs})
         
         return jsonify({"durum": durum, "mesaj": mesaj, "logs": logs})
         
@@ -332,26 +330,26 @@ def transfer():
     log(f"💸 Transfer: {tutar} TL")
     
     try:
-        driver.get("https://internetsubesi.enpara.com/Transfer/TransferToAccount.aspx")
-        time.sleep(3)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "txtIban"))
-        ).send_keys(iban)
+        loop.run_until_complete(page.goto("https://internetsubesi.enpara.com/Transfer/TransferToAccount.aspx"))
+        loop.run_until_complete(page.wait_for_timeout(3000))
         
-        driver.find_element(By.ID, "btnQuery").click()
-        time.sleep(2)
+        loop.run_until_complete(page.fill("#txtIban", iban))
+        loop.run_until_complete(page.click("#btnQuery"))
+        loop.run_until_complete(page.wait_for_timeout(2000))
         
-        driver.find_element(By.ID, "txtAmount").send_keys(str(tutar))
-        driver.find_element(By.ID, "txtDescription").send_keys(aciklama)
+        loop.run_until_complete(page.fill("#txtAmount", str(tutar)))
+        loop.run_until_complete(page.fill("#txtDescription", aciklama))
         
-        driver.find_element(By.ID, "btnNext").click()
-        time.sleep(2)
-        driver.find_element(By.ID, "btnConfirm").click()
-        time.sleep(3)
+        loop.run_until_complete(page.click("#btnNext"))
+        loop.run_until_complete(page.wait_for_timeout(2000))
+        loop.run_until_complete(page.click("#btnConfirm"))
+        loop.run_until_complete(page.wait_for_timeout(3000))
         
-        refs = driver.find_elements(By.CLASS_NAME, "reference-no")
-        ref = refs[0].text if refs else "Yok"
+        refs = loop.run_until_complete(page.query_selector_all(".reference-no"))
+        ref = refs[0].inner_text() if refs else "Yok"
         
         log(f"✅ Transfer tamamlandı! Ref: {ref}")
         return jsonify({"durum": "BASARILI", "mesaj": "Tamamlandı", "referans": ref, "logs": logs})
@@ -362,4 +360,4 @@ def transfer():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-  
+            
