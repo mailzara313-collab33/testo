@@ -1,167 +1,152 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+
+from flask import Flask, request, jsonify, render_template_string
 import os
 import time
-import asyncio
-from flask import Flask, request, jsonify
-from playwright.async_api import async_playwright
 
 app = Flask(__name__)
 
-browser = None
-page = None
-playwright_instance = None
-
+driver = None
 durum = "BEKLIYOR"
 mesaj = "Hazır"
 logs = []
-
-# 🔥 TEK EVENT LOOP (thread safe)
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
 
 def log(m):
     global logs
     m = f"[{time.strftime('%H:%M:%S')}] {m}"
     logs.append(m)
-    if len(logs) > 200:
-        logs.pop(0)
     print(m, flush=True)
 
-# 🔥 Browser başlat (STEALTH + STABLE)
-async def create_browser():
-    global browser, page, playwright_instance
+def create_driver():
+    global driver
+    log("🌐 Chromium başlatılıyor...")
 
-    if browser:
-        return True
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--remote-debugging-port=9222")
 
     try:
-        log("🌐 Browser başlatılıyor...")
-
-        playwright_instance = await async_playwright().start()
-
-        browser = await playwright_instance.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-zygote",
-                "--single-process"
-            ]
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=options
         )
-
-        context = await browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
-        )
-
-        page = await context.new_page()
-
-        log("✅ Browser hazır")
+        log("✅ Chromium başlatıldı!")
         return True
-
     except Exception as e:
-        log(f"❌ Browser hata: {e}")
+        log(f"❌ Hata: {str(e)}")
         return False
 
+@app.route('/')
+def index():
+    return render_template_string("""
+    <h2>🚀 Enpara Bot</h2>
+    <input id="tc" placeholder="TC"><br><br>
+    <input id="sifre" placeholder="Şifre" type="password"><br><br>
+    <button onclick="baslat()">Başlat</button>
 
-@app.route("/")
-def home():
-    return "✅ BOT AKTİF"
+    <pre id="out"></pre>
 
+    <script>
+    async function baslat(){
+        const res = await fetch('/giris', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({
+                tc: document.getElementById('tc').value,
+                sifre: document.getElementById('sifre').value
+            })
+        });
+        const data = await res.json();
+        document.getElementById('out').innerText = JSON.stringify(data,null,2);
+    }
+    </script>
+    """)
 
-@app.route("/giris", methods=["POST"])
+@app.route('/giris', methods=['POST'])
 def giris():
-    global durum, mesaj
-
-    data = request.json
-    tc = data.get("tc")
-    sifre = data.get("sifre")
-
-    log("🚀 Giriş deneniyor...")
-
-    if not tc or not sifre:
-        return jsonify({"durum": "HATA", "mesaj": "Eksik bilgi", "logs": logs})
-
-    if browser is None:
-        ok = loop.run_until_complete(create_browser())
-        if not ok:
-            return jsonify({"durum": "HATA", "mesaj": "Browser açılamadı", "logs": logs})
-
+    global durum, mesaj, driver
+    
+    data = request.get_json()
+    tc = data.get('tc', '')
+    sifre = data.get('sifre', '')
+    
+    log("🚀 Giriş başlatılıyor...")
+    
+    if driver is None:
+        if not create_driver():
+            return jsonify({"durum": "HATA", "mesaj": "Chromium başlatılamadı"})
+    
     try:
-        loop.run_until_complete(page.goto("https://internetsubesi.enpara.com/Login/LoginPage.aspx", timeout=60000))
-
-        loop.run_until_complete(page.fill("#txtuserid", tc))
-        loop.run_until_complete(page.fill("#txtpass", sifre))
-        loop.run_until_complete(page.click("#ctl00_MainContent_lbtnNext"))
-
+        driver.get("https://internetsubesi.enpara.com/Login/LoginPage.aspx")
+        time.sleep(3)
+        
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "txtuserid"))
+        ).send_keys(tc)
+        
+        driver.find_element(By.ID, "txtpass").send_keys(sifre)
+        driver.find_element(By.ID, "ctl00_MainContent_lbtnNext").click()
+        
         durum = "MOBIL_ONAY_BEKLIYOR"
-        mesaj = "Mobil onay ver"
-
-        log("📱 Mobil onay bekleniyor")
-
+        mesaj = "Telefonundan onay ver"
+        
         return jsonify({"durum": durum, "mesaj": mesaj, "logs": logs})
-
+        
     except Exception as e:
-        log(f"❌ Giriş hata: {e}")
+        log(str(e))
         return jsonify({"durum": "HATA", "mesaj": str(e), "logs": logs})
 
-
-@app.route("/kontrol")
+@app.route('/kontrol')
 def kontrol():
     global durum, mesaj
-
+    
     try:
-        url = page.url
-
-        if "Account/AccountSummary" in url:
-            if durum != "GIRIS_BASARILI":
-                durum = "GIRIS_BASARILI"
-                mesaj = "Giriş başarılı"
-                log("✅ Login OK")
-
-        return jsonify({"durum": durum, "mesaj": mesaj, "logs": logs})
-
+        if "AccountSummary" in driver.current_url:
+            durum = "GIRIS_BASARILI"
+            mesaj = "Giriş başarılı"
+        return jsonify({"durum": durum, "mesaj": mesaj})
     except Exception as e:
-        return jsonify({"durum": "HATA", "mesaj": str(e), "logs": logs})
+        return jsonify({"durum": "HATA", "mesaj": str(e)})
 
-
-@app.route("/transfer", methods=["POST"])
+@app.route('/transfer', methods=['POST'])
 def transfer():
     global durum
-
+    
     if durum != "GIRIS_BASARILI":
-        return jsonify({"durum": "HATA", "mesaj": "Login ol", "logs": logs})
-
+        return jsonify({"durum": "HATA", "mesaj": "Önce giriş yap"})
+    
     data = request.json
     iban = data.get("iban")
     tutar = data.get("tutar")
 
     try:
-        loop.run_until_complete(page.goto("https://internetsubesi.enpara.com/Transfer/TransferToAccount.aspx"))
+        driver.get("https://internetsubesi.enpara.com/Transfer/TransferToAccount.aspx")
+        time.sleep(3)
 
-        loop.run_until_complete(page.fill("#txtIban", iban))
-        loop.run_until_complete(page.fill("#txtAmount", str(tutar)))
+        driver.find_element(By.ID, "txtIban").send_keys(iban)
+        driver.find_element(By.ID, "txtAmount").send_keys(str(tutar))
 
-        loop.run_until_complete(page.click("#btnNext"))
-        loop.run_until_complete(page.click("#btnConfirm"))
+        driver.find_element(By.ID, "btnNext").click()
+        driver.find_element(By.ID, "btnConfirm").click()
 
-        log("💸 Transfer gönderildi")
-
-        return jsonify({"durum": "BASARILI", "mesaj": "Transfer OK", "logs": logs})
-
+        return jsonify({"durum": "BASARILI"})
+    
     except Exception as e:
-        log(f"❌ Transfer hata: {e}")
-        return jsonify({"durum": "HATA", "mesaj": str(e), "logs": logs})
+        return jsonify({"durum": "HATA", "mesaj": str(e)})
 
-
-# 🔥 HEALTH CHECK (Render için önemli)
-@app.route("/health")
+@app.route('/health')
 def health():
     return "OK"
 
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=10000)
