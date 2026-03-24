@@ -1,13 +1,20 @@
-FROM mcr.microsoft.com/playwright/python:v1.42.0-jammy
+FROM python:3.10-slim
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y \
+    chromium \
+    chromium-driver \
+    curl \
+    wget \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
 COPY . .
 
-RUN pip install --upgrade pip
-RUN pip install -r requirements.txt
-
-# Port
 ENV PORT=10000
 
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:10000", "--workers", "1", "--threads", "2", "--timeout", "120"]
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "app:app"]
