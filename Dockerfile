@@ -1,19 +1,18 @@
 # ============================================
 # ENPARA TRANSFER API - DOCKERFILE
-# Python 3.11 + Chrome + ChromeDriver + Selenium
+# Python 3.11 + Chrome + ChromeDriver
 # ============================================
 
 FROM python:3.11-slim-bookworm
 
 # ============================================
-# SİSTEM GÜNCELLEME VE BAĞIMLILIKLAR
+# SİSTEM BAĞIMLILIKLARI
 # ============================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Chrome için gerekli kütüphaneler
     wget \
-    gnupg \
-    unzip \
     curl \
+    unzip \
+    gnupg \
     ca-certificates \
     fonts-liberation \
     libasound2 \
@@ -35,52 +34,47 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xdg-utils \
     libu2f-udev \
     libvulkan1 \
-    # Temel araçlar
-    gcc \
     libpq-dev \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================
-# CHROME KURULUMU (Stable)
+# CHROME KURULUMU
 # ============================================
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /usr/share/keyrings/googlechrome-linux-signing-keyring.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-signing-keyring.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list \
     && apt-get update \
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Chrome versionunu kontrol et (log için)
+# Chrome versiyonunu göster
 RUN google-chrome --version
 
 # ============================================
-# CHROMEDRIVER KURULUMU
+# CHROMEDRIVER KURULUMU (Chrome for Testing)
 # ============================================
-# Chrome versiyonuna uygun ChromeDriver'ı indir
-RUN CHROME_VERSION=$(google-chrome --version | sed 's/Google Chrome //' | sed 's/ //g') \
-    && CHROME_MAJOR_VERSION=$(echo $CHROME_VERSION | cut -d. -f1) \
-    && DRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_MAJOR_VERSION") \
-    && wget -q "https://chromedriver.storage.googleapis.com/$DRIVER_VERSION/chromedriver_linux64.zip" -O /tmp/chromedriver.zip \
-    && unzip /tmp/chromedriver.zip -d /usr/local/bin/ \
-    && rm /tmp/chromedriver.zip \
+RUN CHROME_MAJOR=$(google-chrome --version | sed 's/Google Chrome //' | cut -d. -f1) \
+    && echo "Chrome Major: $CHROME_MAJOR" \
+    && DRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_$CHROME_MAJOR") \
+    && echo "Driver: $DRIVER_VERSION" \
+    && wget -q "https://storage.googleapis.com/chrome-for-testing-public/$DRIVER_VERSION/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip \
+    && unzip -q /tmp/chromedriver.zip -d /tmp/ \
+    && mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver \
+    && rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64 \
     && chmod +x /usr/local/bin/chromedriver \
     && chromedriver --version
 
 # ============================================
-# PYTHON ORTAMI
+# PYTHON KURULUMU
 # ============================================
 WORKDIR /app
 
-# requirements.txt'i kopyala ve kur
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-# ============================================
-# UYGULAMA KODU
-# ============================================
 COPY . .
 
-# Veritabanı dizini (SQLite için)
 RUN mkdir -p /app/data && chmod 777 /app/data
 
 # ============================================
@@ -88,24 +82,17 @@ RUN mkdir -p /app/data && chmod 777 /app/data
 # ============================================
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-ENV DISPLAY=:99
 ENV CHROME_BIN=/usr/bin/google-chrome
 ENV CHROMEDRIVER_PATH=/usr/local/bin/chromedriver
-
-# Flask varsayılanları
-ENV FLASK_APP=app.py
-ENV FLASK_ENV=production
+ENV DISPLAY=:99
+ENV PORT=5001
 
 # ============================================
 # SAĞLIK KONTROLÜ
 # ============================================
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-5001}/healthz || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/healthz || exit 1
 
-# ============================================
-# PORT VE BAŞLATMA
-# ============================================
 EXPOSE 5001
 
-# Render.com $PORT env kullanır, yoksa 5001
-CMD exec gunicorn app:app --bind 0.0.0.0:${PORT:-5001} --workers 1 --threads 2 --timeout 120 --keep-alive 5 --log-level info
+CMD exec gunicorn app:app --bind 0.0.0.0:${PORT} --workers 1 --threads 2 --timeout 120 --log-level info
