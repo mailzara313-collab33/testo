@@ -882,7 +882,7 @@ def api_durum_kontrol(user_id):
         "son_odemeler": payments
     })
 
-@app.route("/api/admin-bilgi", methods=["["GET"]"]")
+@app.route("/api/admin-bilgi", methods=["GET"])
 def api_admin_bilgi():
     """Admin IBAN bilgilerini döndür (PHP'den çağrılacak)"""
     return jsonify({
